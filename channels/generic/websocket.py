@@ -12,10 +12,10 @@ from ..exceptions import (
 )
 
 
-class WebsocketConsumer(SyncConsumer):
+class BaseWebsocketConsumer:
     """
-    Base WebSocket consumer. Provides a general encapsulation for the
-    WebSocket handling model that other applications can build on.
+    Base WebSocket consumer mixin. Provides shared logic for both
+    synchronous and asynchronous WebSocket consumers.
     """
 
     groups = None
@@ -24,17 +24,66 @@ class WebsocketConsumer(SyncConsumer):
         if self.groups is None:
             self.groups = []
 
-    def websocket_connect(self, message):
-        """
-        Called when a WebSocket connection is opened.
-        """
+    def _build_accept_message(self, subprotocol=None, headers=None):
+        message = {"type": "websocket.accept", "subprotocol": subprotocol}
+        if headers:
+            message["headers"] = list(headers)
+        return message
+
+    def _build_send_message(self, text_data=None, bytes_data=None):
+        if text_data is not None:
+            return {"type": "websocket.send", "text": text_data}
+        elif bytes_data is not None:
+            return {"type": "websocket.send", "bytes": bytes_data}
+        else:
+            raise ValueError("You must pass one of bytes_data or text_data")
+
+    def _build_close_message(self, code=None, reason=None):
+        message = {"type": "websocket.close"}
+        if code is not None and code is not True:
+            message["code"] = code
+        if reason:
+            message["reason"] = reason
+        return message
+
+    def _add_channel_to_groups(self, add_func):
         try:
             for group in self.groups:
-                async_to_sync(self.channel_layer.group_add)(group, self.channel_name)
+                add_func(group, self.channel_name)
         except AttributeError:
             raise InvalidChannelLayerError(
                 "BACKEND is unconfigured or doesn't support groups"
             )
+
+    def _remove_channel_from_groups(self, discard_func):
+        try:
+            for group in self.groups:
+                discard_func(group, self.channel_name)
+        except AttributeError:
+            raise InvalidChannelLayerError(
+                "BACKEND is unconfigured or doesn't support groups"
+            )
+
+    def _handle_websocket_receive(self, message, receive_func):
+        if message.get("text") is not None:
+            receive_func(text_data=message["text"])
+        else:
+            receive_func(bytes_data=message["bytes"])
+
+
+class WebsocketConsumer(BaseWebsocketConsumer, SyncConsumer):
+    """
+    Base WebSocket consumer. Provides a general encapsulation for the
+    WebSocket handling model that other applications can build on.
+    """
+
+    def websocket_connect(self, message):
+        """
+        Called when a WebSocket connection is opened.
+        """
+        self._add_channel_to_groups(
+            lambda group, channel: async_to_sync(self.channel_layer.group_add)(group, channel)
+        )
         try:
             self.connect()
         except AcceptConnection:
@@ -49,10 +98,7 @@ class WebsocketConsumer(SyncConsumer):
         """
         Accepts an incoming socket
         """
-        message = {"type": "websocket.accept", "subprotocol": subprotocol}
-        if headers:
-            message["headers"] = list(headers)
-
+        message = self._build_accept_message(subprotocol, headers)
         super().send(message)
 
     def websocket_receive(self, message):
@@ -60,10 +106,7 @@ class WebsocketConsumer(SyncConsumer):
         Called when a WebSocket frame is received. Decodes it and passes it
         to receive().
         """
-        if message.get("text") is not None:
-            self.receive(text_data=message["text"])
-        else:
-            self.receive(bytes_data=message["bytes"])
+        self._handle_websocket_receive(message, self.receive)
 
     def receive(self, text_data=None, bytes_data=None):
         """
@@ -75,12 +118,8 @@ class WebsocketConsumer(SyncConsumer):
         """
         Sends a reply back down the WebSocket
         """
-        if text_data is not None:
-            super().send({"type": "websocket.send", "text": text_data})
-        elif bytes_data is not None:
-            super().send({"type": "websocket.send", "bytes": bytes_data})
-        else:
-            raise ValueError("You must pass one of bytes_data or text_data")
+        message = self._build_send_message(text_data, bytes_data)
+        super().send(message)
         if close:
             self.close(close)
 
@@ -88,11 +127,7 @@ class WebsocketConsumer(SyncConsumer):
         """
         Closes the WebSocket from the server end
         """
-        message = {"type": "websocket.close"}
-        if code is not None and code is not True:
-            message["code"] = code
-        if reason:
-            message["reason"] = reason
+        message = self._build_close_message(code, reason)
         super().send(message)
 
     def websocket_disconnect(self, message):
@@ -100,15 +135,9 @@ class WebsocketConsumer(SyncConsumer):
         Called when a WebSocket connection is closed. Base level so you don't
         need to call super() all the time.
         """
-        try:
-            for group in self.groups:
-                async_to_sync(self.channel_layer.group_discard)(
-                    group, self.channel_name
-                )
-        except AttributeError:
-            raise InvalidChannelLayerError(
-                "BACKEND is unconfigured or doesn't support groups"
-            )
+        self._remove_channel_from_groups(
+            lambda group, channel: async_to_sync(self.channel_layer.group_discard)(group, channel)
+        )
         self.disconnect(message["code"])
         raise StopConsumer()
 
@@ -153,29 +182,19 @@ class JsonWebsocketConsumer(WebsocketConsumer):
         return json.dumps(content)
 
 
-class AsyncWebsocketConsumer(AsyncConsumer):
+class AsyncWebsocketConsumer(BaseWebsocketConsumer, AsyncConsumer):
     """
     Base WebSocket consumer, async version. Provides a general encapsulation
     for the WebSocket handling model that other applications can build on.
     """
 
-    groups = None
-
-    def __init__(self, *args, **kwargs):
-        if self.groups is None:
-            self.groups = []
-
     async def websocket_connect(self, message):
         """
         Called when a WebSocket connection is opened.
         """
-        try:
-            for group in self.groups:
-                await self.channel_layer.group_add(group, self.channel_name)
-        except AttributeError:
-            raise InvalidChannelLayerError(
-                "BACKEND is unconfigured or doesn't support groups"
-            )
+        self._add_channel_to_groups(
+            lambda group, channel: self.channel_layer.group_add(group, channel)
+        )
         try:
             await self.connect()
         except AcceptConnection:
@@ -190,9 +209,7 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         """
         Accepts an incoming socket
         """
-        message = {"type": "websocket.accept", "subprotocol": subprotocol}
-        if headers:
-            message["headers"] = list(headers)
+        message = self._build_accept_message(subprotocol, headers)
         await super().send(message)
 
     async def websocket_receive(self, message):
@@ -200,6 +217,9 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         Called when a WebSocket frame is received. Decodes it and passes it
         to receive().
         """
+        await self._handle_websocket_receive_async(message)
+
+    async def _handle_websocket_receive_async(self, message):
         if message.get("text") is not None:
             await self.receive(text_data=message["text"])
         else:
@@ -215,12 +235,8 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         """
         Sends a reply back down the WebSocket
         """
-        if text_data is not None:
-            await super().send({"type": "websocket.send", "text": text_data})
-        elif bytes_data is not None:
-            await super().send({"type": "websocket.send", "bytes": bytes_data})
-        else:
-            raise ValueError("You must pass one of bytes_data or text_data")
+        message = self._build_send_message(text_data, bytes_data)
+        await super().send(message)
         if close:
             await self.close(close)
 
@@ -228,11 +244,7 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         """
         Closes the WebSocket from the server end
         """
-        message = {"type": "websocket.close"}
-        if code is not None and code is not True:
-            message["code"] = code
-        if reason:
-            message["reason"] = reason
+        message = self._build_close_message(code, reason)
         await super().send(message)
 
     async def websocket_disconnect(self, message):
@@ -240,13 +252,9 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         Called when a WebSocket connection is closed. Base level so you don't
         need to call super() all the time.
         """
-        try:
-            for group in self.groups:
-                await self.channel_layer.group_discard(group, self.channel_name)
-        except AttributeError:
-            raise InvalidChannelLayerError(
-                "BACKEND is unconfigured or doesn't support groups"
-            )
+        self._remove_channel_from_groups(
+            lambda group, channel: self.channel_layer.group_discard(group, channel)
+        )
         await self.disconnect(message["code"])
         await aclose_old_connections()
         raise StopConsumer()
@@ -290,3 +298,4 @@ class AsyncJsonWebsocketConsumer(AsyncWebsocketConsumer):
     @classmethod
     async def encode_json(cls, content):
         return json.dumps(content)
+
