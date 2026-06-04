@@ -1,0 +1,176 @@
+diff --git a/channels/security/websocket.py b/channels/security/websocket.py
+index 15bc4fa..5431ef8 100644
+--- a/channels/security/websocket.py
++++ b/channels/security/websocket.py
+@@ -86,7 +86,11 @@ class OriginValidator:
+         its subdomains (for example, ``.example.com`` ``example.com``
+         and any subdomain). Also with scheme (for example, ``http://.example.com``
+         ``http://example.com``). After the domain there must be a port,
+-        but it can be omitted.
++        but it can be omitted. A wildcard port ``:*`` matches any port
++        value for the given scheme and hostname.
++
++        IPv6 addresses in bracket notation (e.g. ``http://[::1]:8000``) are
++        supported for both exact and wildcard port matching.
+ 
+         Note. This function assumes that the given origin is either None, a
+         schema-domain-port string, or just a domain string
+@@ -94,6 +98,11 @@ class OriginValidator:
+         if parsed_origin is None:
+             return False
+ 
++        wildcard_port = False
++        if pattern.endswith(":*"):
++            wildcard_port = True
++            pattern = pattern[:-2]
++
+         # Get ResultParse object
+         parsed_pattern = urlparse(pattern.lower())
+         if parsed_origin.hostname is None:
+@@ -103,6 +112,16 @@ class OriginValidator:
+             return is_same_domain(parsed_origin.hostname, pattern_hostname)
+         # Get origin.port or default ports for origin or None
+         origin_port = self.get_origin_port(parsed_origin)
++
++        if wildcard_port:
++            # Wildcard port matches any port for the given scheme and hostname
++            if (
++                parsed_pattern.scheme == parsed_origin.scheme
++                and is_same_domain(parsed_origin.hostname, parsed_pattern.hostname)
++            ):
++                return True
++            return False
++
+         # Get pattern.port or default ports for pattern or None
+         pattern_port = self.get_origin_port(parsed_pattern)
+         # Compares hostname, scheme, ports of pattern and origin
+diff --git a/tests/security/test_websocket.py b/tests/security/test_websocket.py
+index 1444ea8..bb0f395 100644
+--- a/tests/security/test_websocket.py
++++ b/tests/security/test_websocket.py
+@@ -91,3 +91,125 @@ async def test_origin_validator():
+     connected, _ = await communicator.connect()
+     assert not connected
+     await communicator.disconnect()
++
++
++@pytest.mark.django_db(transaction=True)
++@pytest.mark.asyncio
++async def test_origin_validator_wildcard_port():
++    application = OriginValidator(
++        AsyncWebsocketConsumer(), ["https://example.com:*"]
++    )
++    # Wildcard port matches default https port
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"https://example.com")]
++    )
++    connected, _ = await communicator.connect()
++    assert connected
++    await communicator.disconnect()
++    # Wildcard port matches custom port
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"https://example.com:8000")]
++    )
++    connected, _ = await communicator.connect()
++    assert connected
++    await communicator.disconnect()
++    # Wildcard port does not match different scheme
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"http://example.com:8000")]
++    )
++    connected, _ = await communicator.connect()
++    assert not connected
++    await communicator.disconnect()
++    # Wildcard port does not match different domain
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"https://other.com:443")]
++    )
++    connected, _ = await communicator.connect()
++    assert not connected
++    await communicator.disconnect()
++    # Wildcard port with http scheme
++    application = OriginValidator(
++        AsyncWebsocketConsumer(), ["http://example.com:*"]
++    )
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"http://example.com:3000")]
++    )
++    connected, _ = await communicator.connect()
++    assert connected
++    await communicator.disconnect()
++    # Wildcard port with ws scheme
++    application = OriginValidator(
++        AsyncWebsocketConsumer(), ["ws://example.com:*"]
++    )
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"ws://example.com:8080")]
++    )
++    connected, _ = await communicator.connect()
++    assert connected
++    await communicator.disconnect()
++
++
++@pytest.mark.django_db(transaction=True)
++@pytest.mark.asyncio
++async def test_origin_validator_ipv6():
++    # IPv6 exact match
++    application = OriginValidator(
++        AsyncWebsocketConsumer(), ["http://[::1]:8000"]
++    )
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"http://[::1]:8000")]
++    )
++    connected, _ = await communicator.connect()
++    assert connected
++    await communicator.disconnect()
++    # IPv6 exact match with different port should be denied
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"http://[::1]:9000")]
++    )
++    connected, _ = await communicator.connect()
++    assert not connected
++    await communicator.disconnect()
++    # IPv6 with wildcard port matches any port
++    application = OriginValidator(
++        AsyncWebsocketConsumer(), ["http://[::1]:*"]
++    )
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"http://[::1]:8000")]
++    )
++    connected, _ = await communicator.connect()
++    assert connected
++    await communicator.disconnect()
++    # IPv6 wildcard port matches different port
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"http://[::1]:3000")]
++    )
++    connected, _ = await communicator.connect()
++    assert connected
++    await communicator.disconnect()
++    # IPv6 wildcard port does not match different scheme
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"https://[::1]:8000")]
++    )
++    connected, _ = await communicator.connect()
++    assert not connected
++    await communicator.disconnect()
++    # IPv6 from ALLOWED_HOSTS style (no scheme, bracket notation)
++    application = OriginValidator(
++        AsyncWebsocketConsumer(), ["[::1]"]
++    )
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"http://[::1]:8000")]
++    )
++    connected, _ = await communicator.connect()
++    assert connected
++    await communicator.disconnect()
++    # IPv6 no port, default http port
++    application = OriginValidator(
++        AsyncWebsocketConsumer(), ["http://[::1]"]
++    )
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"http://[::1]")]
++    )
++    connected, _ = await communicator.connect()
++    assert connected
++    await communicator.disconnect()

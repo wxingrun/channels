@@ -86,13 +86,22 @@ class OriginValidator:
         its subdomains (for example, ``.example.com`` ``example.com``
         and any subdomain). Also with scheme (for example, ``http://.example.com``
         ``http://example.com``). After the domain there must be a port,
-        but it can be omitted.
+        but it can be omitted. A wildcard port ``:*`` matches any port
+        value for the given scheme and hostname.
+
+        IPv6 addresses in bracket notation (e.g. ``http://[::1]:8000``) are
+        supported for both exact and wildcard port matching.
 
         Note. This function assumes that the given origin is either None, a
         schema-domain-port string, or just a domain string
         """
         if parsed_origin is None:
             return False
+
+        wildcard_port = False
+        if pattern.endswith(":*"):
+            wildcard_port = True
+            pattern = pattern[:-2]
 
         # Get ResultParse object
         parsed_pattern = urlparse(pattern.lower())
@@ -103,6 +112,16 @@ class OriginValidator:
             return is_same_domain(parsed_origin.hostname, pattern_hostname)
         # Get origin.port or default ports for origin or None
         origin_port = self.get_origin_port(parsed_origin)
+
+        if wildcard_port:
+            # Wildcard port matches any port for the given scheme and hostname
+            if (
+                parsed_pattern.scheme == parsed_origin.scheme
+                and is_same_domain(parsed_origin.hostname, parsed_pattern.hostname)
+            ):
+                return True
+            return False
+
         # Get pattern.port or default ports for pattern or None
         pattern_port = self.get_origin_port(parsed_pattern)
         # Compares hostname, scheme, ports of pattern and origin
