@@ -83,7 +83,7 @@ async def test_origin_validator():
     connected, _ = await communicator.connect()
     assert not connected
     await communicator.disconnect()
-    # Test bug with subdomain and invalid origin header
+    # Test a bug with subdomain and invalid origin header
     application = OriginValidator(AsyncWebsocketConsumer(), [".allowed-domain.com"])
     communicator = WebsocketCommunicator(
         application, "/", headers=[(b"origin", b"something-invalid")]
@@ -91,3 +91,40 @@ async def test_origin_validator():
     connected, _ = await communicator.connect()
     assert not connected
     await communicator.disconnect()
+
+    # Test wildcard port
+    application = OriginValidator(AsyncWebsocketConsumer(), ["https://example.com:*"])
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"https://example.com:8000")]
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+    await communicator.disconnect()
+
+    # Test IPv6 exact match
+    application = OriginValidator(AsyncWebsocketConsumer(), ["http://[::1]:8000"])
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"http://[::1]:8000")]
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+    await communicator.disconnect()
+
+    # Test IPv6 wildcard port
+    application = OriginValidator(AsyncWebsocketConsumer(), ["http://[::1]:*"])
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"http://[::1]:8000")]
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+    await communicator.disconnect()
+
+    # Test IPv6 domain match (AllowedHosts style)
+    application = OriginValidator(AsyncWebsocketConsumer(), ["[::1]"])
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"http://[::1]:8000")]
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+    await communicator.disconnect()
+

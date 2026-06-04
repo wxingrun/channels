@@ -98,18 +98,30 @@ class OriginValidator:
         parsed_pattern = urlparse(pattern.lower())
         if parsed_origin.hostname is None:
             return False
+            
+        origin_hostname = parsed_origin.hostname
+        if origin_hostname.startswith('[') and origin_hostname.endswith(']'):
+            origin_hostname = origin_hostname[1:-1]
+
         if not parsed_pattern.scheme:
             pattern_hostname = urlparse("//" + pattern).hostname or pattern
-            return is_same_domain(parsed_origin.hostname, pattern_hostname)
+            if pattern_hostname and pattern_hostname.startswith('[') and pattern_hostname.endswith(']'):
+                pattern_hostname = pattern_hostname[1:-1]
+            return is_same_domain(origin_hostname, pattern_hostname)
         # Get origin.port or default ports for origin or None
         origin_port = self.get_origin_port(parsed_origin)
         # Get pattern.port or default ports for pattern or None
         pattern_port = self.get_origin_port(parsed_pattern)
+        
+        pattern_hostname = parsed_pattern.hostname
+        if pattern_hostname and pattern_hostname.startswith('[') and pattern_hostname.endswith(']'):
+            pattern_hostname = pattern_hostname[1:-1]
+
         # Compares hostname, scheme, ports of pattern and origin
         if (
             parsed_pattern.scheme == parsed_origin.scheme
-            and origin_port == pattern_port
-            and is_same_domain(parsed_origin.hostname, parsed_pattern.hostname)
+            and (pattern_port == "*" or origin_port == pattern_port)
+            and is_same_domain(origin_hostname, pattern_hostname)
         ):
             return True
         return False
@@ -119,9 +131,15 @@ class OriginValidator:
         Returns the origin.port or port for this schema by default.
         Otherwise, it returns None.
         """
-        if origin.port is not None:
-            # Return origin.port
-            return origin.port
+        try:
+            if origin.port is not None:
+                # Return origin.port
+                return origin.port
+        except ValueError:
+            # Handle wildcard port '*'
+            if hasattr(origin, 'netloc') and origin.netloc.endswith(":*"):
+                return "*"
+            raise
         # if origin.port doesn`t exists
         if origin.scheme == "http" or origin.scheme == "ws":
             # Default port return for http, ws
