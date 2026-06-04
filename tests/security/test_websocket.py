@@ -91,3 +91,96 @@ async def test_origin_validator():
     connected, _ = await communicator.connect()
     assert not connected
     await communicator.disconnect()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_origin_validator_wildcard_port():
+    """
+    Tests that OriginValidator correctly handles wildcard ports.
+    """
+    # Test with wildcard port
+    application = OriginValidator(
+        AsyncWebsocketConsumer(), ["http://example.com:*"]
+    )
+    # Test with port 80
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"http://example.com:80")]
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+    await communicator.disconnect()
+    # Test with port 8000
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"http://example.com:8000")]
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+    await communicator.disconnect()
+    # Test with port 443 (HTTPS but pattern is HTTP - should not match)
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"https://example.com:443")]
+    )
+    connected, _ = await communicator.connect()
+    assert not connected
+    await communicator.disconnect()
+    # Test with different domain
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"http://different.com:8000")]
+    )
+    connected, _ = await communicator.connect()
+    assert not connected
+    await communicator.disconnect()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_origin_validator_ipv6():
+    """
+    Tests that OriginValidator correctly handles IPv6 addresses.
+    """
+    # Test with IPv6 address
+    application = OriginValidator(
+        AsyncWebsocketConsumer(), ["http://[::1]:8000"]
+    )
+    # Test with exact IPv6 match
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"http://[::1]:8000")]
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+    await communicator.disconnect()
+    # Test with different port
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"http://[::1]:8080")]
+    )
+    connected, _ = await communicator.connect()
+    assert not connected
+    await communicator.disconnect()
+    # Test with IPv6 wildcard port
+    application = OriginValidator(
+        AsyncWebsocketConsumer(), ["http://[::1]:*"]
+    )
+    # Test with any port
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"http://[::1]:8000")]
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+    await communicator.disconnect()
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"http://[::1]:8080")]
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+    await communicator.disconnect()
+    # Test with IPv4 for comparison
+    application = OriginValidator(
+        AsyncWebsocketConsumer(), ["http://127.0.0.1:8000"]
+    )
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"http://127.0.0.1:8000")]
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+    await communicator.disconnect()

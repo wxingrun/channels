@@ -86,7 +86,7 @@ class OriginValidator:
         its subdomains (for example, ``.example.com`` ``example.com``
         and any subdomain). Also with scheme (for example, ``http://.example.com``
         ``http://example.com``). After the domain there must be a port,
-        but it can be omitted.
+        but it can be omitted. A wildcard port (``:*``) allows any port.
 
         Note. This function assumes that the given origin is either None, a
         schema-domain-port string, or just a domain string
@@ -94,8 +94,12 @@ class OriginValidator:
         if parsed_origin is None:
             return False
 
+        # Check for wildcard port pattern and process accordingly
+        has_wildcard_port = pattern.endswith(":*")
+        pattern_for_parse = pattern[:-2] if has_wildcard_port else pattern
+
         # Get ResultParse object
-        parsed_pattern = urlparse(pattern.lower())
+        parsed_pattern = urlparse(pattern_for_parse.lower())
         if parsed_origin.hostname is None:
             return False
         if not parsed_pattern.scheme:
@@ -105,10 +109,11 @@ class OriginValidator:
         origin_port = self.get_origin_port(parsed_origin)
         # Get pattern.port or default ports for pattern or None
         pattern_port = self.get_origin_port(parsed_pattern)
+        
         # Compares hostname, scheme, ports of pattern and origin
         if (
             parsed_pattern.scheme == parsed_origin.scheme
-            and origin_port == pattern_port
+            and (has_wildcard_port or origin_port == pattern_port)
             and is_same_domain(parsed_origin.hostname, parsed_pattern.hostname)
         ):
             return True
