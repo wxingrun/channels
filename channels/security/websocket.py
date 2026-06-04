@@ -86,7 +86,11 @@ class OriginValidator:
         its subdomains (for example, ``.example.com`` ``example.com``
         and any subdomain). Also with scheme (for example, ``http://.example.com``
         ``http://example.com``). After the domain there must be a port,
-        but it can be omitted.
+        but it can be omitted. A wildcard port (``:*``) matches any port
+        (for example, ``https://example.com:*``).
+
+        IPv6 addresses are supported in both patterns and origins, using
+        bracket notation (for example, ``http://[::1]:8000`` or ``[::1]``).
 
         Note. This function assumes that the given origin is either None, a
         schema-domain-port string, or just a domain string
@@ -94,10 +98,18 @@ class OriginValidator:
         if parsed_origin is None:
             return False
 
-        # Get ResultParse object
-        parsed_pattern = urlparse(pattern.lower())
+        # Handle IPv6 patterns without scheme (e.g., "[::1]" or "[::1]:8000")
+        # urlparse("[::1]") misparses "[::1]" as a scheme, so we prepend "//"
+        if pattern.startswith("["):
+            parsed_pattern = urlparse("//" + pattern.lower())
+        else:
+            parsed_pattern = urlparse(pattern.lower())
         if parsed_origin.hostname is None:
             return False
+
+        # Detect wildcard port in pattern's netloc (e.g., "example.com:*")
+        has_wildcard_port = parsed_pattern.netloc.endswith(":*")
+
         if not parsed_pattern.scheme:
             pattern_hostname = urlparse("//" + pattern).hostname or pattern
             return is_same_domain(parsed_origin.hostname, pattern_hostname)
@@ -108,7 +120,7 @@ class OriginValidator:
         # Compares hostname, scheme, ports of pattern and origin
         if (
             parsed_pattern.scheme == parsed_origin.scheme
-            and origin_port == pattern_port
+            and (has_wildcard_port or origin_port == pattern_port)
             and is_same_domain(parsed_origin.hostname, parsed_pattern.hostname)
         ):
             return True
