@@ -1,0 +1,115 @@
+diff --git a/.github/workflows/tests.yml b/.github/workflows/tests.yml
+index 10f347a..149abea 100644
+--- a/.github/workflows/tests.yml
++++ b/.github/workflows/tests.yml
+@@ -8,17 +8,28 @@ on:
+ 
+ jobs:
+   tests:
+-    name: Python ${{ matrix.python-version }}
++    name: Python ${{ matrix.python-version }} - Django ${{ matrix.django-version }}
+     runs-on: ubuntu-latest
+     strategy:
+       fail-fast: false
+       matrix:
+         python-version:
++        - "3.9"
+         - "3.10"
+         - "3.11"
+         - "3.12"
+         - "3.13"
+         - "3.14"
++        - "3.15"
++        django-version:
++        - "52"
++        - "60"
++        - "61"
++        exclude:
++        - python-version: "3.9"
++          django-version: "61"
++        - python-version: "3.10"
++          django-version: "61"
+ 
+     steps:
+       - uses: actions/checkout@v6
+@@ -41,7 +52,7 @@ jobs:
+           python -m pip install --upgrade tox
+ 
+       - name: Run tox targets for ${{ matrix.python-version }}
+-        run: tox run -f py$(echo ${{ matrix.python-version }} | tr -d .)
++        run: tox run -f py$(echo ${{ matrix.python-version }} | tr -d .)-dj${{ matrix.django-version }}
+ 
+   lint:
+     name: Lint
+@@ -52,7 +63,7 @@ jobs:
+       - name: Set up Python
+         uses: actions/setup-python@v6
+         with:
+-          python-version: "3.11"
++          python-version: "3.12"
+ 
+       - name: Install dependencies
+         run: |
+diff --git a/setup.cfg b/setup.cfg
+index 0dfcf09..2d0cc6b 100644
+--- a/setup.cfg
++++ b/setup.cfg
+@@ -16,14 +16,17 @@ classifiers =
+     Operating System :: OS Independent
+     Programming Language :: Python
+     Programming Language :: Python :: 3
++    Programming Language :: Python :: 3.9
+     Programming Language :: Python :: 3.10
+     Programming Language :: Python :: 3.11
+     Programming Language :: Python :: 3.12
+     Programming Language :: Python :: 3.13
+     Programming Language :: Python :: 3.14
++    Programming Language :: Python :: 3.15
+     Framework :: Django
+     Framework :: Django :: 5.2
+     Framework :: Django :: 6.0
++    Framework :: Django :: 6.1
+     Topic :: Internet :: WWW/HTTP
+ 
+ [options]
+@@ -32,7 +35,7 @@ include_package_data = True
+ install_requires =
+     Django>=5.2
+     asgiref>=3.9.0,<4
+-python_requires = >=3.9
++python_requires = >=3.9,<3.16
+ 
+ [options.extras_require]
+ tests =
+diff --git a/tox.ini b/tox.ini
+index b11ca98..e1f69c5 100644
+--- a/tox.ini
++++ b/tox.ini
+@@ -1,9 +1,10 @@
+ [tox]
+ envlist =
+-    py{310,311,312,313,314}-dj52
++    py{39,310,311,312,313,314}-dj52
+     py{312,313,314}-dj60
+     py{312,313,314}-djmain
+     qa
++    py{311,312,313,314,315}-dj61
+ 
+ [testenv]
+ extras = tests, daphne
+@@ -12,6 +13,7 @@ commands =
+ deps =
+     dj52: Django>=5.2,<6.0
+     dj60: Django>=6.0rc1,<6.1
++    dj61: Django>=6.1,<6.2
+     djmain: https://github.com/django/django/archive/main.tar.gz
+ 
+ [testenv:qa]
+@@ -24,3 +26,7 @@ commands =
+     flake8 channels tests
+     black --check channels tests
+     isort --check-only --diff channels tests
++
++[testenv:py{311,312,313,314,315}-dj61]
++setenv =
++    DJANGO_SETTINGS_MODULE=tests.sample_project.config.settings
