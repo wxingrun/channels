@@ -1,0 +1,234 @@
+diff --git a/channels/security/websocket.py b/channels/security/websocket.py
+index 15bc4fa..9cd36cd 100644
+--- a/channels/security/websocket.py
++++ b/channels/security/websocket.py
+@@ -6,6 +6,10 @@ from django.http.request import is_same_domain
+ from ..generic.websocket import AsyncWebsocketConsumer
+ 
+ 
++WILDCARD_PORT = object()
++INVALID_PORT = object()
++
++
+ class OriginValidator:
+     """
+     Validates that the incoming connection has an Origin header that
+@@ -17,28 +21,21 @@ class OriginValidator:
+         self.allowed_origins = allowed_origins
+ 
+     async def __call__(self, scope, receive, send):
+-        # Make sure the scope is of type websocket
+         if scope["type"] != "websocket":
+             raise ValueError(
+                 "You cannot use OriginValidator on a non-WebSocket connection"
+             )
+-        # Extract the Origin header
+         parsed_origin = None
+         for header_name, header_value in scope.get("headers", []):
+             if header_name == b"origin":
+                 try:
+-                    # Set ResultParse
+                     parsed_origin = urlparse(header_value.decode("latin1"))
+                 except UnicodeDecodeError:
+                     pass
+-        # Check to see if the origin header is valid
+         if self.valid_origin(parsed_origin):
+-            # Pass control to the application
+             return await self.application(scope, receive, send)
+-        else:
+-            # Deny the connection
+-            denier = WebsocketDenier()
+-            return await denier(scope, receive, send)
++        denier = WebsocketDenier()
++        return await denier(scope, receive, send)
+ 
+     def valid_origin(self, parsed_origin):
+         """
+@@ -48,7 +45,6 @@ class OriginValidator:
+ 
+         Returns ``True`` if validation function was successful, ``False`` otherwise.
+         """
+-        # None is not allowed unless all hosts are allowed
+         if parsed_origin is None and "*" not in self.allowed_origins:
+             return False
+         return self.validate_origin(parsed_origin)
+@@ -94,44 +90,71 @@ class OriginValidator:
+         if parsed_origin is None:
+             return False
+ 
+-        # Get ResultParse object
+         parsed_pattern = urlparse(pattern.lower())
+-        if parsed_origin.hostname is None:
++        origin_hostname = self.get_origin_hostname(parsed_origin)
++        if origin_hostname is None:
+             return False
+         if not parsed_pattern.scheme:
+-            pattern_hostname = urlparse("//" + pattern).hostname or pattern
+-            return is_same_domain(parsed_origin.hostname, pattern_hostname)
+-        # Get origin.port or default ports for origin or None
++            pattern_hostname = self.get_origin_hostname(urlparse("//" + pattern))
++            return is_same_domain(origin_hostname, pattern_hostname or pattern)
++
++        pattern_hostname = self.get_origin_hostname(parsed_pattern)
++        if pattern_hostname is None:
++            return False
++
+         origin_port = self.get_origin_port(parsed_origin)
+-        # Get pattern.port or default ports for pattern or None
+-        pattern_port = self.get_origin_port(parsed_pattern)
+-        # Compares hostname, scheme, ports of pattern and origin
+-        if (
++        pattern_port = self.get_origin_port(parsed_pattern, allow_wildcard=True)
++        return (
+             parsed_pattern.scheme == parsed_origin.scheme
+-            and origin_port == pattern_port
+-            and is_same_domain(parsed_origin.hostname, parsed_pattern.hostname)
+-        ):
+-            return True
+-        return False
++            and self.match_allowed_port(origin_port, pattern_port)
++            and is_same_domain(origin_hostname, pattern_hostname)
++        )
+ 
+-    def get_origin_port(self, origin):
++    def get_origin_hostname(self, origin):
++        try:
++            return origin.hostname
++        except ValueError:
++            return None
++
++    def match_allowed_port(self, origin_port, pattern_port):
++        if origin_port is INVALID_PORT or pattern_port is INVALID_PORT:
++            return False
++        if pattern_port is WILDCARD_PORT:
++            return origin_port is not None
++        return origin_port == pattern_port
++
++    def get_origin_port(self, origin, allow_wildcard=False):
+         """
+         Returns the origin.port or port for this schema by default.
+         Otherwise, it returns None.
+         """
+-        if origin.port is not None:
+-            # Return origin.port
+-            return origin.port
+-        # if origin.port doesn`t exists
++        try:
++            if origin.port is not None:
++                return origin.port
++        except ValueError:
++            if allow_wildcard and self.origin_has_wildcard_port(origin):
++                return WILDCARD_PORT
++            return INVALID_PORT
+         if origin.scheme == "http" or origin.scheme == "ws":
+-            # Default port return for http, ws
+             return 80
+         elif origin.scheme == "https" or origin.scheme == "wss":
+-            # Default port return for https, wss
+             return 443
+         else:
+             return None
+ 
++    def origin_has_wildcard_port(self, origin):
++        netloc = origin.netloc.rsplit("@", 1)[-1]
++        if not netloc:
++            return False
++        if netloc.startswith("["):
++            closing = netloc.find("]")
++            if closing == -1:
++                return False
++            return netloc[closing + 1 :] == ":*"
++        if ":" not in netloc:
++            return False
++        return netloc.rsplit(":", 1)[1] == "*"
++
+ 
+ def AllowedHostsOriginValidator(application):
+     """
+diff --git a/tests/security/test_websocket.py b/tests/security/test_websocket.py
+index 1444ea8..9ef3a96 100644
+--- a/tests/security/test_websocket.py
++++ b/tests/security/test_websocket.py
+@@ -91,3 +91,82 @@ async def test_origin_validator():
+     connected, _ = await communicator.connect()
+     assert not connected
+     await communicator.disconnect()
++
++
++@pytest.mark.django_db(transaction=True)
++@pytest.mark.asyncio
++async def test_origin_validator_allows_wildcard_ports():
++    application = OriginValidator(
++        AsyncWebsocketConsumer(), ["https://allowed-domain.com:*"]
++    )
++
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"https://allowed-domain.com:443")]
++    )
++    connected, _ = await communicator.connect()
++    assert connected
++    await communicator.disconnect()
++
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"https://allowed-domain.com:8443")]
++    )
++    connected, _ = await communicator.connect()
++    assert connected
++    await communicator.disconnect()
++
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"http://allowed-domain.com:8443")]
++    )
++    connected, _ = await communicator.connect()
++    assert not connected
++    await communicator.disconnect()
++
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"https://other-domain.com:8443")]
++    )
++    connected, _ = await communicator.connect()
++    assert not connected
++    await communicator.disconnect()
++
++
++@pytest.mark.django_db(transaction=True)
++@pytest.mark.asyncio
++async def test_origin_validator_supports_ipv6_origins():
++    application = OriginValidator(AsyncWebsocketConsumer(), ["http://[::1]:8000"])
++
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"http://[::1]:8000")]
++    )
++    connected, _ = await communicator.connect()
++    assert connected
++    await communicator.disconnect()
++
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"http://[::1]:9000")]
++    )
++    connected, _ = await communicator.connect()
++    assert not connected
++    await communicator.disconnect()
++
++    application = OriginValidator(AsyncWebsocketConsumer(), ["http://[::1]:*"])
++
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"http://[::1]:8000")]
++    )
++    connected, _ = await communicator.connect()
++    assert connected
++    await communicator.disconnect()
++
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"http://[::1]:9000")]
++    )
++    connected, _ = await communicator.connect()
++    assert connected
++    await communicator.disconnect()
++
++    communicator = WebsocketCommunicator(
++        application, "/", headers=[(b"origin", b"http://[::2]:9000")]
++    )
++    connected, _ = await communicator.connect()
++    assert not connected
++    await communicator.disconnect()

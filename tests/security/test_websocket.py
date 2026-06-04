@@ -91,3 +91,82 @@ async def test_origin_validator():
     connected, _ = await communicator.connect()
     assert not connected
     await communicator.disconnect()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_origin_validator_allows_wildcard_ports():
+    application = OriginValidator(
+        AsyncWebsocketConsumer(), ["https://allowed-domain.com:*"]
+    )
+
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"https://allowed-domain.com:443")]
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+    await communicator.disconnect()
+
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"https://allowed-domain.com:8443")]
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+    await communicator.disconnect()
+
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"http://allowed-domain.com:8443")]
+    )
+    connected, _ = await communicator.connect()
+    assert not connected
+    await communicator.disconnect()
+
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"https://other-domain.com:8443")]
+    )
+    connected, _ = await communicator.connect()
+    assert not connected
+    await communicator.disconnect()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_origin_validator_supports_ipv6_origins():
+    application = OriginValidator(AsyncWebsocketConsumer(), ["http://[::1]:8000"])
+
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"http://[::1]:8000")]
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+    await communicator.disconnect()
+
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"http://[::1]:9000")]
+    )
+    connected, _ = await communicator.connect()
+    assert not connected
+    await communicator.disconnect()
+
+    application = OriginValidator(AsyncWebsocketConsumer(), ["http://[::1]:*"])
+
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"http://[::1]:8000")]
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+    await communicator.disconnect()
+
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"http://[::1]:9000")]
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+    await communicator.disconnect()
+
+    communicator = WebsocketCommunicator(
+        application, "/", headers=[(b"origin", b"http://[::2]:9000")]
+    )
+    connected, _ = await communicator.connect()
+    assert not connected
+    await communicator.disconnect()
