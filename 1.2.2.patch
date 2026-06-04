@@ -1,0 +1,172 @@
+diff --git a/tests/sample_project/sampleapp/consumers.py b/tests/sample_project/sampleapp/consumers.py
+index b163581..00492a0 100644
+--- a/tests/sample_project/sampleapp/consumers.py
++++ b/tests/sample_project/sampleapp/consumers.py
+@@ -6,6 +6,11 @@ from .models import Message
+ 
+ class LiveMessageConsumer(AsyncJsonWebsocketConsumer):
+     async def connect(self):
++        user = self.scope.get("user")
++        if not user or not user.is_authenticated:
++            await self.close(code=401)
++            return
++
+         await self.channel_layer.group_add("live_message", self.channel_name)
+         await self.accept()
+         await self.send_current_state()
+@@ -30,16 +35,62 @@ class LiveMessageConsumer(AsyncJsonWebsocketConsumer):
+         Message.objects.filter(id=msg_id).delete()
+ 
+     async def receive_json(self, content):
+-        action = content.get("action", "create")
++        user = self.scope.get("user")
++        if not user or not user.is_authenticated:
++            await self.send_json({
++                "code": 401,
++                "error": "Unauthorized",
++                "message": "Authentication required"
++            })
++            return
++
++        if not isinstance(content, dict):
++            await self.send_json({
++                "code": 400,
++                "error": "Invalid format",
++                "message": "Message must be a JSON object"
++            })
++            return
++
++        action = content.get("action")
++        if action not in ("create", "delete"):
++            await self.send_json({
++                "code": 400,
++                "error": "Invalid action",
++                "message": "Only 'create' and 'delete' actions are allowed"
++            })
++            return
+ 
+         if action == "create":
+             title = content.get("title", "")
+             text = content.get("message", "")
++            
++            if not isinstance(title, str) or not isinstance(text, str) or not title.strip() or not text.strip():
++                await self.send_json({
++                    "code": 400,
++                    "error": "Invalid input",
++                    "message": "Title and message cannot be empty"
++                })
++                return
++                
+             await self._create_message(title=title, text=text)
+ 
+         elif action == "delete":
+             msg_id = content.get("id")
+-            await self._delete_message(msg_id)
++            
++            try:
++                msg_id_int = int(msg_id)
++                if msg_id_int <= 0:
++                    raise ValueError
++            except (ValueError, TypeError):
++                await self.send_json({
++                    "code": 400,
++                    "error": "Invalid msg_id",
++                    "message": "msg_id must be a positive integer"
++                })
++                return
++                
++            await self._delete_message(msg_id_int)
+ 
+         # After any action, rebroadcast current state
+         await self.send_current_state()
+diff --git a/tests/sample_project/tests/test_selenium.py b/tests/sample_project/tests/test_selenium.py
+index 5228052..0f42451 100644
+--- a/tests/sample_project/tests/test_selenium.py
++++ b/tests/sample_project/tests/test_selenium.py
+@@ -79,3 +79,86 @@ class TestSampleApp(SeleniumMixin, ChannelsLiveServerTestCase):
+         messageCount = self.find_element(By.ID, "messageCount")
+         self.assertIsNotNone(messageCount, "Message count should be present")
+         self.assertEqual(messageCount.text, "0")
++
++
++from django.test import TransactionTestCase
++from django.contrib.auth.models import AnonymousUser, User
++from channels.testing import WebsocketCommunicator
++from tests.sample_project.sampleapp.consumers import LiveMessageConsumer
++from channels.db import database_sync_to_async
++
++class DummyLiveMessageConsumer(LiveMessageConsumer):
++    async def connect(self):
++        await self.accept()
++
++class TestLiveMessageConsumer(TransactionTestCase):
++    async def test_unauth_connect(self):
++        communicator = WebsocketCommunicator(LiveMessageConsumer.as_asgi(), "/ws/")
++        communicator.scope["user"] = AnonymousUser()
++        connected, close_code = await communicator.connect()
++        self.assertFalse(connected)
++        self.assertEqual(close_code, 401)
++
++    @database_sync_to_async
++    def create_user(self):
++        return User.objects.create_user("testuser_ws", "test@test.com", "pass")
++
++    async def get_auth_communicator(self):
++        user = await self.create_user()
++        communicator = WebsocketCommunicator(LiveMessageConsumer.as_asgi(), "/ws/")
++        communicator.scope["user"] = user
++        connected, _ = await communicator.connect()
++        self.assertTrue(connected)
++        # Consume the initial state broadcast
++        await communicator.receive_json_from()
++        return communicator
++
++    async def test_unauth_send_message(self):
++        communicator = WebsocketCommunicator(DummyLiveMessageConsumer.as_asgi(), "/ws/")
++        communicator.scope["user"] = AnonymousUser()
++        connected, _ = await communicator.connect()
++        self.assertTrue(connected)
++        
++        await communicator.send_json_to({"action": "create", "title": "t", "message": "m"})
++        response = await communicator.receive_json_from()
++        self.assertEqual(response["code"], 401)
++        self.assertEqual(response["error"], "Unauthorized")
++        
++        await communicator.disconnect()
++
++    async def test_invalid_action(self):
++        communicator = await self.get_auth_communicator()
++        await communicator.send_json_to({"action": "invalid"})
++        response = await communicator.receive_json_from()
++        self.assertEqual(response["code"], 400)
++        self.assertEqual(response["error"], "Invalid action")
++        await communicator.disconnect()
++
++    async def test_invalid_msg_id(self):
++        communicator = await self.get_auth_communicator()
++        
++        invalid_ids = [None, "", "abc", -1, 0]
++        for msg_id in invalid_ids:
++            await communicator.send_json_to({"action": "delete", "id": msg_id})
++            response = await communicator.receive_json_from()
++            self.assertEqual(response["code"], 400)
++            self.assertEqual(response["error"], "Invalid msg_id")
++            
++        await communicator.disconnect()
++
++    async def test_empty_title_message(self):
++        communicator = await self.get_auth_communicator()
++        
++        invalid_payloads = [
++            {"action": "create", "title": "", "message": "msg"},
++            {"action": "create", "title": "title", "message": ""},
++            {"action": "create", "title": "   ", "message": "msg"},
++        ]
++        
++        for payload in invalid_payloads:
++            await communicator.send_json_to(payload)
++            response = await communicator.receive_json_from()
++            self.assertEqual(response["code"], 400)
++            self.assertEqual(response["error"], "Invalid input")
++            
++        await communicator.disconnect()

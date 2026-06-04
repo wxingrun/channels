@@ -6,6 +6,11 @@ from .models import Message
 
 class LiveMessageConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self):
+        user = self.scope.get("user")
+        if not user or not user.is_authenticated:
+            await self.close(code=401)
+            return
+
         await self.channel_layer.group_add("live_message", self.channel_name)
         await self.accept()
         await self.send_current_state()
@@ -30,16 +35,62 @@ class LiveMessageConsumer(AsyncJsonWebsocketConsumer):
         Message.objects.filter(id=msg_id).delete()
 
     async def receive_json(self, content):
-        action = content.get("action", "create")
+        user = self.scope.get("user")
+        if not user or not user.is_authenticated:
+            await self.send_json({
+                "code": 401,
+                "error": "Unauthorized",
+                "message": "Authentication required"
+            })
+            return
+
+        if not isinstance(content, dict):
+            await self.send_json({
+                "code": 400,
+                "error": "Invalid format",
+                "message": "Message must be a JSON object"
+            })
+            return
+
+        action = content.get("action")
+        if action not in ("create", "delete"):
+            await self.send_json({
+                "code": 400,
+                "error": "Invalid action",
+                "message": "Only 'create' and 'delete' actions are allowed"
+            })
+            return
 
         if action == "create":
             title = content.get("title", "")
             text = content.get("message", "")
+            
+            if not isinstance(title, str) or not isinstance(text, str) or not title.strip() or not text.strip():
+                await self.send_json({
+                    "code": 400,
+                    "error": "Invalid input",
+                    "message": "Title and message cannot be empty"
+                })
+                return
+                
             await self._create_message(title=title, text=text)
 
         elif action == "delete":
             msg_id = content.get("id")
-            await self._delete_message(msg_id)
+            
+            try:
+                msg_id_int = int(msg_id)
+                if msg_id_int <= 0:
+                    raise ValueError
+            except (ValueError, TypeError):
+                await self.send_json({
+                    "code": 400,
+                    "error": "Invalid msg_id",
+                    "message": "msg_id must be a positive integer"
+                })
+                return
+                
+            await self._delete_message(msg_id_int)
 
         # After any action, rebroadcast current state
         await self.send_current_state()
