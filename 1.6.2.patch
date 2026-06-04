@@ -1,0 +1,71 @@
+diff --git a/.github/workflows/tests.yml b/.github/workflows/tests.yml
+index 10f347a..1e2ee2e 100644
+--- a/.github/workflows/tests.yml
++++ b/.github/workflows/tests.yml
+@@ -14,11 +14,23 @@ jobs:
+       fail-fast: false
+       matrix:
+         python-version:
++        - "3.9"
+         - "3.10"
+         - "3.11"
+         - "3.12"
+         - "3.13"
+         - "3.14"
++        - "3.15"
++        django-version:
++        - "5.2"
++        - "6.0"
++        - "6.1"
++        - "main"
++        exclude:
++          - python-version: "3.9"
++            django-version: "6.1"
++          - python-version: "3.10"
++            django-version: "6.1"
+ 
+     steps:
+       - uses: actions/checkout@v6
+@@ -41,7 +53,7 @@ jobs:
+           python -m pip install --upgrade tox
+ 
+       - name: Run tox targets for ${{ matrix.python-version }}
+-        run: tox run -f py$(echo ${{ matrix.python-version }} | tr -d .)
++        run: tox run -e py$(echo ${{ matrix.python-version }} | tr -d .)-dj$(echo ${{ matrix.django-version }} | tr -d .)
+ 
+   lint:
+     name: Lint
+@@ -52,7 +64,7 @@ jobs:
+       - name: Set up Python
+         uses: actions/setup-python@v6
+         with:
+-          python-version: "3.11"
++          python-version: "3.12"
+ 
+       - name: Install dependencies
+         run: |
+diff --git a/setup.cfg b/setup.cfg
+index 0dfcf09..1c70650 100644
+--- a/setup.cfg
++++ b/setup.cfg
+@@ -32,7 +32,7 @@ include_package_data = True
+ install_requires =
+     Django>=5.2
+     asgiref>=3.9.0,<4
+-python_requires = >=3.9
++python_requires = >=3.9,<3.16
+ 
+ [options.extras_require]
+ tests =
+diff --git a/tox.ini b/tox.ini
+index b11ca98..35fa666 100644
+--- a/tox.ini
++++ b/tox.ini
+@@ -4,6 +4,7 @@ envlist =
+     py{312,313,314}-dj60
+     py{312,313,314}-djmain
+     qa
++    py315-dj61
+ 
+ [testenv]
+ extras = tests, daphne
