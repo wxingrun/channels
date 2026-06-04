@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from asgiref.sync import async_to_sync
@@ -160,10 +161,14 @@ class AsyncWebsocketConsumer(AsyncConsumer):
     """
 
     groups = None
+    ping_interval = 0
+    ping_timeout = None
 
     def __init__(self, *args, **kwargs):
         if self.groups is None:
             self.groups = []
+        self._ping_task = None
+        self._ping_timeout_task = None
 
     async def websocket_connect(self, message):
         """
@@ -194,16 +199,69 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         if headers:
             message["headers"] = list(headers)
         await super().send(message)
+        if self.ping_interval > 0:
+            self._ping_task = asyncio.create_task(self._ping_loop())
+
+    async def _ping_loop(self):
+        """
+        Ping loop that sends periodic ping frames
+        """
+        try:
+            while True:
+                await asyncio.sleep(self.ping_interval)
+                await self.send_ping()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+
+    async def send_ping(self):
+        """
+        Send a ping frame to the client
+        """
+        await super().send({"type": "websocket.ping"})
+        if self.ping_timeout is not None:
+            if self._ping_timeout_task and not self._ping_timeout_task.done():
+                self._ping_timeout_task.cancel()
+            self._ping_timeout_task = asyncio.create_task(self._ping_timeout_handler())
+
+    async def _ping_timeout_handler(self):
+        """
+        Handles ping timeout
+        """
+        try:
+            await asyncio.sleep(self.ping_timeout)
+            await self.close()
+        except asyncio.CancelledError:
+            pass
 
     async def websocket_receive(self, message):
         """
         Called when a WebSocket frame is received. Decodes it and passes it
         to receive().
         """
-        if message.get("text") is not None:
+        message_type = message.get("type")
+        if message_type == "websocket.ping":
+            await self.on_ping(message)
+        elif message_type == "websocket.pong":
+            await self.on_pong(message)
+        elif message.get("text") is not None:
             await self.receive(text_data=message["text"])
         else:
             await self.receive(bytes_data=message["bytes"])
+
+    async def on_ping(self, message):
+        """
+        Called when a ping frame is received.
+        """
+        await super().send({"type": "websocket.pong"})
+
+    async def on_pong(self, message):
+        """
+        Called when a pong frame is received.
+        """
+        if self._ping_timeout_task and not self._ping_timeout_task.done():
+            self._ping_timeout_task.cancel()
 
     async def receive(self, text_data=None, bytes_data=None):
         """
@@ -228,6 +286,7 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         """
         Closes the WebSocket from the server end
         """
+        self._stop_tasks()
         message = {"type": "websocket.close"}
         if code is not None and code is not True:
             message["code"] = code
@@ -235,11 +294,21 @@ class AsyncWebsocketConsumer(AsyncConsumer):
             message["reason"] = reason
         await super().send(message)
 
+    def _stop_tasks(self):
+        """
+        Stops all background tasks
+        """
+        if self._ping_task and not self._ping_task.done():
+            self._ping_task.cancel()
+        if self._ping_timeout_task and not self._ping_timeout_task.done():
+            self._ping_timeout_task.cancel()
+
     async def websocket_disconnect(self, message):
         """
         Called when a WebSocket connection is closed. Base level so you don't
         need to call super() all the time.
         """
+        self._stop_tasks()
         try:
             for group in self.groups:
                 await self.channel_layer.group_discard(group, self.channel_name)

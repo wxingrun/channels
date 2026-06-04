@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 from django.test import override_settings
 
@@ -536,3 +537,99 @@ async def test_websocket_receive_with_none_text():
     assert response["text"] == "Received text: Hello, world!"
 
     await communicator.disconnect()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_async_websocket_consumer_ping_pong():
+    """
+    Tests that AsyncWebsocketConsumer correctly handles ping and pong frames.
+    """
+    ping_received = False
+    pong_received = False
+
+    class TestConsumer(AsyncWebsocketConsumer):
+        async def on_ping(self, message):
+            nonlocal ping_received
+            ping_received = True
+            await super().on_ping(message)
+
+        async def on_pong(self, message):
+            nonlocal pong_received
+            pong_received = True
+
+    app = TestConsumer()
+
+    communicator = WebsocketCommunicator(app, "/testws/")
+    connected, _ = await communicator.connect()
+    assert connected
+
+    # Test sending ping frame
+    await communicator.send_input({"type": "websocket.ping"})
+    response = await communicator.receive_output()
+    assert response["type"] == "websocket.pong"
+    assert ping_received is True
+
+    # Test sending pong frame
+    await communicator.send_input({"type": "websocket.pong"})
+    assert pong_received is True
+
+    await communicator.disconnect()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_async_websocket_consumer_ping_interval():
+    """
+    Tests that AsyncWebsocketConsumer sends pings at the configured interval.
+    """
+    pings_sent = []
+
+    class TestConsumer(AsyncWebsocketConsumer):
+        ping_interval = 0.1
+
+        async def send_ping(self):
+            pings_sent.append(True)
+            if len(pings_sent) < 3:
+                await super().send_ping()
+
+    app = TestConsumer()
+
+    communicator = WebsocketCommunicator(app, "/testws/")
+    connected, _ = await communicator.connect()
+    assert connected
+
+    # Wait for ping to be sent
+    await asyncio.sleep(0.35)
+
+    assert len(pings_sent) >= 2
+
+    await communicator.disconnect()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_async_websocket_consumer_ping_timeout():
+    """
+    Tests that AsyncWebsocketConsumer closes connection on ping timeout.
+    """
+    closed = False
+
+    class TestConsumer(AsyncWebsocketConsumer):
+        ping_interval = 0.1
+        ping_timeout = 0.15
+
+        async def disconnect(self, code):
+            nonlocal closed
+            closed = True
+
+    app = TestConsumer()
+
+    communicator = WebsocketCommunicator(app, "/testws/")
+    connected, _ = await communicator.connect()
+    assert connected
+
+    # Wait for timeout to happen
+    await asyncio.sleep(0.4)
+
+    assert closed is True
