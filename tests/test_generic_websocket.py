@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from django.test import override_settings
 
@@ -292,6 +294,97 @@ async def test_async_websocket_consumer_specific_channel_layer():
         assert results["received"] == ("hello", None)
 
         await communicator.disconnect()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_async_websocket_consumer_heartbeat_ping_and_pong_hooks():
+    results = {}
+
+    class TestConsumer(AsyncWebsocketConsumer):
+        ping_interval = 0.03
+        ping_timeout = 0.2
+
+        async def connect(self):
+            await self.accept()
+
+        async def on_ping(self, payload=None):
+            results["ping_payload"] = payload
+
+        async def on_pong(self, payload=None):
+            results.setdefault("pong_payloads", []).append(payload)
+
+    communicator = WebsocketCommunicator(TestConsumer(), "/testws/")
+    connected, _ = await communicator.connect()
+    assert connected
+
+    response = await communicator.receive_output(timeout=0.1)
+    assert response == {"type": "websocket.ping"}
+
+    await communicator.send_input({"type": "websocket.pong", "bytes": b"alive"})
+    await asyncio.sleep(0.001)
+    assert results["pong_payloads"] == [b"alive"]
+
+    await communicator.send_input({"type": "websocket.ping", "bytes": b"client"})
+    response = await communicator.receive_output(timeout=0.1)
+    assert response == {"type": "websocket.pong", "bytes": b"client"}
+    assert results["ping_payload"] == b"client"
+
+    await communicator.disconnect()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_async_websocket_consumer_heartbeat_timeout_closes_connection():
+    results = {}
+
+    class TestConsumer(AsyncWebsocketConsumer):
+        ping_interval = 0.03
+        ping_timeout = 0.02
+
+        async def connect(self):
+            await self.accept()
+
+        async def disconnect(self, code):
+            results["disconnected"] = code
+
+    communicator = WebsocketCommunicator(TestConsumer(), "/testws/")
+    connected, _ = await communicator.connect()
+    assert connected
+
+    response = await communicator.receive_output(timeout=0.1)
+    assert response == {"type": "websocket.ping"}
+
+    response = await communicator.receive_output(timeout=0.1)
+    assert response["type"] == "websocket.close"
+    assert response["code"] == 1011
+
+    await communicator.send_input({"type": "websocket.disconnect", "code": 1011})
+    await communicator.wait()
+    assert results["disconnected"] == 1011
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_async_websocket_consumer_heartbeat_timeout_resets_after_pong():
+    class TestConsumer(AsyncWebsocketConsumer):
+        ping_interval = 0.03
+        ping_timeout = 0.02
+
+        async def connect(self):
+            await self.accept()
+
+    communicator = WebsocketCommunicator(TestConsumer(), "/testws/")
+    connected, _ = await communicator.connect()
+    assert connected
+
+    response = await communicator.receive_output(timeout=0.1)
+    assert response == {"type": "websocket.ping"}
+
+    await communicator.send_input({"type": "websocket.pong"})
+    assert await communicator.receive_nothing(timeout=0.025, interval=0.005)
+
+    await communicator.disconnect()
 
 
 @pytest.mark.django_db(transaction=True)

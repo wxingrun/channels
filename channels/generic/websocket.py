@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from asgiref.sync import async_to_sync
@@ -160,10 +161,15 @@ class AsyncWebsocketConsumer(AsyncConsumer):
     """
 
     groups = None
+    ping_interval = 0
+    ping_timeout = None
 
     def __init__(self, *args, **kwargs):
         if self.groups is None:
             self.groups = []
+        self._heartbeat_task = None
+        self._heartbeat_timeout_task = None
+        self._waiting_for_pong = False
 
     async def websocket_connect(self, message):
         """
@@ -194,6 +200,7 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         if headers:
             message["headers"] = list(headers)
         await super().send(message)
+        self._start_heartbeat()
 
     async def websocket_receive(self, message):
         """
@@ -205,10 +212,28 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         else:
             await self.receive(bytes_data=message["bytes"])
 
+    async def websocket_ping(self, message):
+        pong_message = {"type": "websocket.pong"}
+        if message.get("bytes") is not None:
+            pong_message["bytes"] = message["bytes"]
+        await super().send(pong_message)
+        await self.on_ping(message.get("bytes"))
+
+    async def websocket_pong(self, message):
+        self._waiting_for_pong = False
+        await self._stop_heartbeat_timeout_task()
+        await self.on_pong(message.get("bytes"))
+
     async def receive(self, text_data=None, bytes_data=None):
         """
         Called with a decoded WebSocket frame.
         """
+        pass
+
+    async def on_ping(self, payload=None):
+        pass
+
+    async def on_pong(self, payload=None):
         pass
 
     async def send(self, text_data=None, bytes_data=None, close=False):
@@ -228,6 +253,7 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         """
         Closes the WebSocket from the server end
         """
+        await self._stop_heartbeat()
         message = {"type": "websocket.close"}
         if code is not None and code is not True:
             message["code"] = code
@@ -240,6 +266,7 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         Called when a WebSocket connection is closed. Base level so you don't
         need to call super() all the time.
         """
+        await self._stop_heartbeat()
         try:
             for group in self.groups:
                 await self.channel_layer.group_discard(group, self.channel_name)
@@ -256,6 +283,57 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         Called when a WebSocket connection is closed.
         """
         pass
+
+    def _start_heartbeat(self):
+        if self.ping_interval <= 0 or self._heartbeat_task is not None:
+            return
+        self._heartbeat_task = asyncio.create_task(self._run_heartbeat())
+
+    async def _run_heartbeat(self):
+        try:
+            while True:
+                await asyncio.sleep(self.ping_interval)
+                await super().send({"type": "websocket.ping"})
+                if self.ping_timeout is not None and not self._waiting_for_pong:
+                    self._waiting_for_pong = True
+                    self._heartbeat_timeout_task = asyncio.create_task(
+                        self._wait_for_pong()
+                    )
+        except asyncio.CancelledError:
+            pass
+
+    async def _wait_for_pong(self):
+        try:
+            await asyncio.sleep(self.ping_timeout)
+            if self._waiting_for_pong:
+                await self.close(code=1011)
+        except asyncio.CancelledError:
+            pass
+
+    async def _stop_heartbeat(self):
+        self._waiting_for_pong = False
+        await self._stop_heartbeat_timeout_task()
+        await self._stop_heartbeat_task()
+
+    async def _stop_heartbeat_task(self):
+        task = self._heartbeat_task
+        self._heartbeat_task = None
+        await self._cancel_task(task)
+
+    async def _stop_heartbeat_timeout_task(self):
+        task = self._heartbeat_timeout_task
+        self._heartbeat_timeout_task = None
+        await self._cancel_task(task)
+
+    async def _cancel_task(self, task):
+        current_task = asyncio.current_task()
+        if task is None or task is current_task:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 class AsyncJsonWebsocketConsumer(AsyncWebsocketConsumer):
