@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from asgiref.sync import async_to_sync
@@ -160,10 +161,15 @@ class AsyncWebsocketConsumer(AsyncConsumer):
     """
 
     groups = None
+    ping_interval = 0
+    ping_timeout = None
 
     def __init__(self, *args, **kwargs):
         if self.groups is None:
             self.groups = []
+        self._ping_task = None
+        self._timeout_task = None
+        super().__init__(*args, **kwargs)
 
     async def websocket_connect(self, message):
         """
@@ -194,6 +200,8 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         if headers:
             message["headers"] = list(headers)
         await super().send(message)
+        if self.ping_interval > 0:
+            self._ping_task = asyncio.ensure_future(self._ping_loop())
 
     async def websocket_receive(self, message):
         """
@@ -211,6 +219,21 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         """
         pass
 
+    async def websocket_ping(self, message):
+        await self.on_ping()
+
+    async def websocket_pong(self, message):
+        if self._timeout_task is not None:
+            self._timeout_task.cancel()
+            self._timeout_task = None
+        await self.on_pong()
+
+    async def on_ping(self):
+        pass
+
+    async def on_pong(self):
+        pass
+
     async def send(self, text_data=None, bytes_data=None, close=False):
         """
         Sends a reply back down the WebSocket
@@ -223,6 +246,24 @@ class AsyncWebsocketConsumer(AsyncConsumer):
             raise ValueError("You must pass one of bytes_data or text_data")
         if close:
             await self.close(close)
+
+    async def _ping_loop(self):
+        while True:
+            await asyncio.sleep(self.ping_interval)
+            try:
+                await self.base_send({"type": "websocket.ping"})
+            except Exception:
+                break
+            if self.ping_timeout is not None:
+                if self._timeout_task is not None:
+                    self._timeout_task.cancel()
+                self._timeout_task = asyncio.ensure_future(
+                    self._ping_timeout_check()
+                )
+
+    async def _ping_timeout_check(self):
+        await asyncio.sleep(self.ping_timeout)
+        await self.close(code=4001)
 
     async def close(self, code=None, reason=None):
         """
@@ -240,6 +281,12 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         Called when a WebSocket connection is closed. Base level so you don't
         need to call super() all the time.
         """
+        if self._ping_task is not None:
+            self._ping_task.cancel()
+            self._ping_task = None
+        if self._timeout_task is not None:
+            self._timeout_task.cancel()
+            self._timeout_task = None
         try:
             for group in self.groups:
                 await self.channel_layer.group_discard(group, self.channel_name)
