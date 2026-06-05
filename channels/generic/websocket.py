@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from asgiref.sync import async_to_sync
@@ -160,10 +161,14 @@ class AsyncWebsocketConsumer(AsyncConsumer):
     """
 
     groups = None
+    ping_interval = 0
+    ping_timeout = None
 
     def __init__(self, *args, **kwargs):
         if self.groups is None:
             self.groups = []
+        self._ping_task = None
+        self._ping_timeout_task = None
 
     async def websocket_connect(self, message):
         """
@@ -195,15 +200,59 @@ class AsyncWebsocketConsumer(AsyncConsumer):
             message["headers"] = list(headers)
         await super().send(message)
 
+        if self.ping_interval > 0:
+            self._ping_task = asyncio.create_task(self._ping_loop())
+
+    async def _ping_loop(self):
+        try:
+            while True:
+                await asyncio.sleep(self.ping_interval)
+                await self.send(text_data="ping")
+                if self.ping_timeout is not None:
+                    if self._ping_timeout_task is not None:
+                        self._ping_timeout_task.cancel()
+                    self._ping_timeout_task = asyncio.create_task(self._check_pong_timeout())
+        except asyncio.CancelledError:
+            pass
+
+    async def _check_pong_timeout(self):
+        try:
+            await asyncio.sleep(self.ping_timeout)
+            await self.close()
+        except asyncio.CancelledError:
+            pass
+
     async def websocket_receive(self, message):
         """
         Called when a WebSocket frame is received. Decodes it and passes it
         to receive().
         """
-        if message.get("text") is not None:
-            await self.receive(text_data=message["text"])
+        text_data = message.get("text")
+        if text_data == "ping":
+            await self.on_ping(text_data)
+            return
+        elif text_data == "pong":
+            await self.on_pong(text_data)
+            return
+
+        if text_data is not None:
+            await self.receive(text_data=text_data)
         else:
             await self.receive(bytes_data=message["bytes"])
+
+    async def on_ping(self, payload):
+        """
+        Handle an incoming ping payload.
+        """
+        await self.send(text_data="pong")
+
+    async def on_pong(self, payload):
+        """
+        Handle an incoming pong payload.
+        """
+        if getattr(self, "_ping_timeout_task", None) is not None:
+            self._ping_timeout_task.cancel()
+            self._ping_timeout_task = None
 
     async def receive(self, text_data=None, bytes_data=None):
         """
@@ -240,6 +289,11 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         Called when a WebSocket connection is closed. Base level so you don't
         need to call super() all the time.
         """
+        if getattr(self, "_ping_task", None) is not None:
+            self._ping_task.cancel()
+        if getattr(self, "_ping_timeout_task", None) is not None:
+            self._ping_timeout_task.cancel()
+            
         try:
             for group in self.groups:
                 await self.channel_layer.group_discard(group, self.channel_name)

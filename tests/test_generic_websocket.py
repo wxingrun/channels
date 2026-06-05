@@ -536,3 +536,56 @@ async def test_websocket_receive_with_none_text():
     assert response["text"] == "Received text: Hello, world!"
 
     await communicator.disconnect()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_async_websocket_consumer_ping_pong():
+    """
+    Tests that AsyncWebsocketConsumer ping/pong mechanism works.
+    """
+    import asyncio
+    results = {}
+
+    class TestConsumer(AsyncWebsocketConsumer):
+        ping_interval = 0.01
+        ping_timeout = 0.05
+
+        async def connect(self):
+            await self.accept()
+
+        async def on_ping(self, payload):
+            results["ping_received"] = payload
+            await super().on_ping(payload)
+
+        async def on_pong(self, payload):
+            results["pong_received"] = payload
+            await super().on_pong(payload)
+
+    app = TestConsumer()
+
+    communicator = WebsocketCommunicator(app, "/testws/")
+    connected, _ = await communicator.connect()
+    assert connected
+
+    # Wait for the first ping
+    response = await communicator.receive_from(timeout=0.1)
+    assert response == "ping"
+
+    # Send a ping to server, expect a pong
+    await communicator.send_to(text_data="ping")
+    response = await communicator.receive_from(timeout=0.1)
+    assert response == "pong"
+    assert results["ping_received"] == "ping"
+
+    # Send a pong to server to clear the timeout
+    await communicator.send_to(text_data="pong")
+    
+    # Wait for timeout to hit because we don't reply to the next ping
+    await asyncio.sleep(0.1)
+
+    msg = await communicator.receive_output(timeout=0.1)
+    assert msg["type"] == "websocket.close"
+
+    await communicator.disconnect()
+
