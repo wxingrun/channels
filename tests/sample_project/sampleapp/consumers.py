@@ -6,6 +6,9 @@ from .models import Message
 
 class LiveMessageConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self):
+        if not self.scope["user"].is_authenticated:
+            await self.close(code=4401)
+            return
         await self.channel_layer.group_add("live_message", self.channel_name)
         await self.accept()
         await self.send_current_state()
@@ -30,16 +33,54 @@ class LiveMessageConsumer(AsyncJsonWebsocketConsumer):
         Message.objects.filter(id=msg_id).delete()
 
     async def receive_json(self, content):
+        if not self.scope["user"].is_authenticated:
+            await self.send_json(
+                {
+                    "code": 401,
+                    "error": "Authentication required",
+                    "message": "You must be logged in to perform this action.",
+                }
+            )
+            return
+
         action = content.get("action", "create")
 
         if action == "create":
             title = content.get("title", "")
             text = content.get("message", "")
+            if not title or not text:
+                await self.send_json(
+                    {
+                        "code": 400,
+                        "error": "Invalid request",
+                        "message": "Title and message must not be empty.",
+                    }
+                )
+                return
             await self._create_message(title=title, text=text)
 
         elif action == "delete":
             msg_id = content.get("id")
+            if msg_id is None or isinstance(msg_id, bool) or not isinstance(msg_id, int) or msg_id <= 0:
+                await self.send_json(
+                    {
+                        "code": 400,
+                        "error": "Invalid msg_id",
+                        "message": "msg_id must be a positive integer.",
+                    }
+                )
+                return
             await self._delete_message(msg_id)
+
+        else:
+            await self.send_json(
+                {
+                    "code": 400,
+                    "error": "Invalid action",
+                    "message": "Only 'create' and 'delete' actions are allowed.",
+                }
+            )
+            return
 
         # After any action, rebroadcast current state
         await self.send_current_state()
