@@ -12,10 +12,11 @@ from ..exceptions import (
 )
 
 
-class WebsocketConsumer(SyncConsumer):
+class BaseWebsocketConsumer:
     """
-    Base WebSocket consumer. Provides a general encapsulation for the
-    WebSocket handling model that other applications can build on.
+    Base WebSocket consumer mixin. Provides shared logic for both sync and
+    async WebSocket consumers, including message construction, data extraction,
+    and initialization.
     """
 
     groups = None
@@ -23,6 +24,41 @@ class WebsocketConsumer(SyncConsumer):
     def __init__(self, *args, **kwargs):
         if self.groups is None:
             self.groups = []
+
+    def _build_accept_message(self, subprotocol=None, headers=None):
+        message = {"type": "websocket.accept", "subprotocol": subprotocol}
+        if headers:
+            message["headers"] = list(headers)
+        return message
+
+    def _build_close_message(self, code=None, reason=None):
+        message = {"type": "websocket.close"}
+        if code is not None and code is not True:
+            message["code"] = code
+        if reason:
+            message["reason"] = reason
+        return message
+
+    def _build_send_message(self, text_data=None, bytes_data=None):
+        if text_data is not None:
+            return {"type": "websocket.send", "text": text_data}
+        elif bytes_data is not None:
+            return {"type": "websocket.send", "bytes": bytes_data}
+        else:
+            raise ValueError("You must pass one of bytes_data or text_data")
+
+    def _get_receive_data(self, message):
+        if message.get("text") is not None:
+            return {"text_data": message["text"]}
+        else:
+            return {"bytes_data": message["bytes"]}
+
+
+class WebsocketConsumer(BaseWebsocketConsumer, SyncConsumer):
+    """
+    Base WebSocket consumer. Provides a general encapsulation for the
+    WebSocket handling model that other applications can build on.
+    """
 
     def websocket_connect(self, message):
         """
@@ -49,21 +85,14 @@ class WebsocketConsumer(SyncConsumer):
         """
         Accepts an incoming socket
         """
-        message = {"type": "websocket.accept", "subprotocol": subprotocol}
-        if headers:
-            message["headers"] = list(headers)
-
-        super().send(message)
+        super().send(self._build_accept_message(subprotocol, headers))
 
     def websocket_receive(self, message):
         """
         Called when a WebSocket frame is received. Decodes it and passes it
         to receive().
         """
-        if message.get("text") is not None:
-            self.receive(text_data=message["text"])
-        else:
-            self.receive(bytes_data=message["bytes"])
+        self.receive(**self._get_receive_data(message))
 
     def receive(self, text_data=None, bytes_data=None):
         """
@@ -75,12 +104,7 @@ class WebsocketConsumer(SyncConsumer):
         """
         Sends a reply back down the WebSocket
         """
-        if text_data is not None:
-            super().send({"type": "websocket.send", "text": text_data})
-        elif bytes_data is not None:
-            super().send({"type": "websocket.send", "bytes": bytes_data})
-        else:
-            raise ValueError("You must pass one of bytes_data or text_data")
+        super().send(self._build_send_message(text_data, bytes_data))
         if close:
             self.close(close)
 
@@ -88,12 +112,7 @@ class WebsocketConsumer(SyncConsumer):
         """
         Closes the WebSocket from the server end
         """
-        message = {"type": "websocket.close"}
-        if code is not None and code is not True:
-            message["code"] = code
-        if reason:
-            message["reason"] = reason
-        super().send(message)
+        super().send(self._build_close_message(code, reason))
 
     def websocket_disconnect(self, message):
         """
@@ -153,17 +172,11 @@ class JsonWebsocketConsumer(WebsocketConsumer):
         return json.dumps(content)
 
 
-class AsyncWebsocketConsumer(AsyncConsumer):
+class AsyncWebsocketConsumer(BaseWebsocketConsumer, AsyncConsumer):
     """
     Base WebSocket consumer, async version. Provides a general encapsulation
     for the WebSocket handling model that other applications can build on.
     """
-
-    groups = None
-
-    def __init__(self, *args, **kwargs):
-        if self.groups is None:
-            self.groups = []
 
     async def websocket_connect(self, message):
         """
@@ -190,20 +203,14 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         """
         Accepts an incoming socket
         """
-        message = {"type": "websocket.accept", "subprotocol": subprotocol}
-        if headers:
-            message["headers"] = list(headers)
-        await super().send(message)
+        await super().send(self._build_accept_message(subprotocol, headers))
 
     async def websocket_receive(self, message):
         """
         Called when a WebSocket frame is received. Decodes it and passes it
         to receive().
         """
-        if message.get("text") is not None:
-            await self.receive(text_data=message["text"])
-        else:
-            await self.receive(bytes_data=message["bytes"])
+        await self.receive(**self._get_receive_data(message))
 
     async def receive(self, text_data=None, bytes_data=None):
         """
@@ -215,12 +222,7 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         """
         Sends a reply back down the WebSocket
         """
-        if text_data is not None:
-            await super().send({"type": "websocket.send", "text": text_data})
-        elif bytes_data is not None:
-            await super().send({"type": "websocket.send", "bytes": bytes_data})
-        else:
-            raise ValueError("You must pass one of bytes_data or text_data")
+        await super().send(self._build_send_message(text_data, bytes_data))
         if close:
             await self.close(close)
 
@@ -228,12 +230,7 @@ class AsyncWebsocketConsumer(AsyncConsumer):
         """
         Closes the WebSocket from the server end
         """
-        message = {"type": "websocket.close"}
-        if code is not None and code is not True:
-            message["code"] = code
-        if reason:
-            message["reason"] = reason
-        await super().send(message)
+        await super().send(self._build_close_message(code, reason))
 
     async def websocket_disconnect(self, message):
         """
