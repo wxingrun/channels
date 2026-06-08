@@ -8,7 +8,7 @@ on:
 
 jobs:
   tests:
-    name: Python ${{ matrix.python-version }}
+    name: Python ${{ matrix.python-version }} + Django ${{ matrix.django-version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -19,6 +19,17 @@ jobs:
         - "3.12"
         - "3.13"
         - "3.14"
+        - "3.15"
+        django-version:
+        - "5.2"
+        - "6.0"
+        - "6.1"
+        - "main"
+        exclude:
+        - python-version: "3.9"
+          django-version: "6.1"
+        - python-version: "3.10"
+          django-version: "6.1"
 
     steps:
       - uses: actions/checkout@v6
@@ -40,8 +51,8 @@ jobs:
           python -m pip install --upgrade pip wheel setuptools
           python -m pip install --upgrade tox
 
-      - name: Run tox targets for ${{ matrix.python-version }}
-        run: tox run -f py$(echo ${{ matrix.python-version }} | tr -d .)
+      - name: Run tox targets for ${{ matrix.python-version }} + Django ${{ matrix.django-version }}
+        run: tox run -e py$(echo ${{ matrix.python-version }} | tr -d .)-dj$(echo ${{ matrix.django-version }} | tr -d .)
 
   lint:
     name: Lint
